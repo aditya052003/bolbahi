@@ -1,138 +1,157 @@
-# BolBahi
+# BolBahi — Hinglish Voice Orders for Kirana Shops
 
-BolBahi is a voice-first order pad for an Indian kirana counter. It records a short order, sends converted audio to Gnani speech-to-text, shows the returned transcript, parses a deliberately limited catalogue, and requires a completed Gnani read-back plus a confirmation click before writing a receipt to local order history.
+Kiranas take orders in Hindi and Roman Hinglish, often with corrections while the customer is still speaking. Repeating a corrected quantity as an addition can create a wrong order. BolBahi captures the spoken order, turns it into an editable list, asks for review when details are unclear, and requires a spoken read-back and explicit confirmation before saving.
 
-## Start locally
+## Live demo and source
 
-Use Node.js 20 or newer. On Windows PowerShell, use `npm.cmd` if the `npm` command is blocked.
+- Live demo: [BolBahi on Amplify](https://main.d2cca99agmgj8e.amplifyapp.com)
+- GitHub: [aditya052003/bolbahi](https://github.com/aditya052003/bolbahi)
 
-```powershell
-       npm.cmd install
+## Quick demo
+
+Say **“Do kilo chawal aur ek litre tel”** → review the rice and oil lines → listen to the read-back → confirm → view the receipt in order history.
+
+## Implemented features
+
+- Browser microphone recording with a visible transcript from Gnani speech-to-text.
+- Editable structured order lines; spoken SET corrections replace quantities, explicit ADD phrases add quantities, and removal phrases remove only the named item.
+- Missing or ambiguous products, quantities, units, and unsupported wording are flagged for review rather than guessed.
+- Read-back through Gnani text-to-speech; changing the order invalidates the prior read-back, and saving requires explicit confirmation.
+- Receipts and saved order history. Raw audio is not saved.
+- Synthetic walk-in customer data and fixed **demo prices**; totals are calculated in integer paise.
+
+### Supported catalogue and language
+
+| Product | Supported Hindi / Roman names | Units |
+| --- | --- | --- |
+| Rice | चावल, chawal, rice | kg, gram |
+| Atta | आटा, atta, aata | kg, gram |
+| Sugar | चीनी, chini, cheeni, शक्कर, sugar | kg, gram |
+| Cooking oil | तेल, tel, oil | litre, ml |
+| Milk | दूध, doodh, milk | litre, ml |
+| Dal | दाल, dal, daal | kg, gram |
+| Salt | नमक, namak, salt | kg, gram |
+| Biscuits | बिस्किट, बिस्कुट, biscuit, biscuits | packet |
+
+Quantities support digits and a limited set of Hindi/Roman words from zero to ten, including **aadha / आधा** (0.5), **dedh / डेढ़** (1.5), and **dhai / ढाई** (2.5). Gram and millilitre values convert to the catalogue’s kg/litre units.
+
+Examples: **“chawal chaar kilo kar do”** sets rice to 4 kg; **“do kilo chawal aur jod do”** adds 2 kg. Correction markers such as **nahi / नहीं** apply to the following clause. The parser is deterministic and intentionally limited; it does not claim to understand unrestricted Hindi or Hinglish. The shopkeeper must click **Mark reviewed** to resolve a review flag; clarification is not automatic.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  Browser[Shopkeeper browser] --> Amplify[React and Vite on Amplify]
+  Browser --> Gateway[API Gateway HTTP API]
+  Gateway --> Lambda[Express on Lambda]
+  Lambda -->|STT and TTS| Gnani[Gnani Speech APIs]
+  Lambda -->|confirmed orders and history| DynamoDB[(DynamoDB)]
+  Vite[Local Vite app] -->|/api proxy| LocalExpress[Local Express]
+  LocalExpress --> Json[(data/orders.json)]
 ```
 
-The existing `.env` is read by the Express backend and should not be overwritten. If this folder has no `.env`, copy `.env.example` to `.env`, then add your Gnani API key to the backend variable `GNANI_API_KEY`. Do not put the key in frontend files or browser settings. Restart the server after changing it.
+The deployed frontend is hosted on Amplify, the Express API runs on Lambda behind API Gateway, and confirmed deployed orders are stored in DynamoDB. Local development uses Vite and Express together and stores orders in `data/orders.json` on the app server; the browser does not use local storage for order history.
+
+## Local setup
+
+Use Node.js 20 or newer. In Windows PowerShell, run from the project root:
 
 ```powershell
+npm.cmd ci
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 npm.cmd run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173). The single `dev` command starts Vite and Express together. Vite proxies `/api` requests to the backend on port 3001. Microphone access requires localhost or HTTPS.
+Configure `GNANI_API_KEY` privately in the backend `.env` for local use. Keep an existing `.env` unchanged; only copy the example when no `.env` exists. The key is read by Express and must not be put in frontend code, Vite variables, or Git. Open [http://localhost:5173](http://localhost:5173). Microphone access requires localhost or HTTPS.
 
-If your PowerShell policy permits `npm`, the equivalent commands are `npm install` and `npm run dev`.
+Local order data is written to `data/orders.json`; generated order data is ignored by Git. **Migration note:** earlier versions used `server/data/orders.json`. Move an existing legacy file to `data/orders.json` before upgrading; the migration is manual. The history already present in this workspace was moved byte-for-byte.
 
-## Speech integration
+## Testing and validation
 
-The app uses Gnani’s Speech APIs directly. It does not use Agent Builder. The current integration uses these documented REST requests:
+### Automated tests
 
-| Task | Endpoint and model | Authentication and response |
-| --- | --- | --- |
-| Speech-to-text | `POST https://api.vachana.ai/stt/v3`, form field `model=prisma-v3.0` | Backend sends `X-API-Key-ID` and multipart `audio_file`, `language_code=indic-auto`, `format=codemix`, and catalogue terms. Gnani returns JSON with `success`, `transcript`, `model`, and detected language. |
-| Text-to-speech | `POST https://api.vachana.ai/api/v1/tts/inference`, `model=timbre-v2.5`, `voice=Poorvi`, `language=hi-en` | Backend sends `X-API-Key-ID` and JSON. The request asks for mono, 48 kHz, 16-bit PCM WAV; Gnani returns binary audio. |
+```powershell
+npm.cmd test
+npm.cmd run build
+sam validate --lint
+```
 
-Gnani documents the STT REST formats as WAV, MP3, OGG, FLAC, AAC, and M4A, with a 30 second clip limit. Browsers commonly record WebM/Opus, so BolBahi decodes the browser recording and converts it to mono, 16 kHz PCM WAV in the browser before upload. The interface stops recording at 25 seconds; Express enforces 30 seconds, 8 MB, mono, 16-bit PCM, and 8–44.1 kHz. Raw audio is held in memory only for the request and is not written to disk.
+The latest recorded automated run passed **25 tests** and the production Vite build; SAM template lint validation also passed. Tests cover parser corrections and additions, removals, fractions, review states, paise totals, confirmation, DynamoDB repository behavior with a fake client, and Lambda audio proxy behavior. Automated tests do not call live Gnani or AWS services.
 
-The API key is loaded by Express from the backend environment only. It is never returned to the browser or written to logs. The frontend reports when Gnani speech is not configured and does not create placeholder transcripts or audio. STT/TTS calls are made once per user action; there are no automatic credit-consuming retries.
+### Isolated validation of the existing SAM artifact
 
-Official Gnani references: [REST transcription](https://docs.gnani.ai/api/STT/speech-to-text), [Prisma v3.0](https://docs.gnani.ai/api/STT/models/prisma-v3), [TTS REST inference](https://docs.gnani.ai/api/TTS/tts-inference), [available voices](https://docs.gnani.ai/api/TTS/available-voices), and [audio limits](https://docs.gnani.ai/api/STT/limits).
+The user reports that `sam build` succeeded in their normal PowerShell terminal. The existing `.aws-sam/build/BolBahiApiFunction/lambda.mjs` artifact was copied byte-for-byte to a temporary directory outside the repository and tested there, without project `node_modules` or environment files. It imported and exported `handler`; `/api/health` returned `ok: true`. The isolated test intentionally had no Gnani key, so it returned `speechConfigured: false`. It did not call DynamoDB or test live speech.
 
-## Supported order language
+### Earlier user-reported LOCAL browser tests
 
-The parser is deterministic and intentionally limited. It does not claim to understand unrestricted Hindi or Hinglish. Supported catalogue words are:
+These earlier browser checks were reported by the user and are not AWS verification:
 
-| Product | Example Hindi / Roman names |
-| --- | --- |
-| Rice | चावल, chawal, rice |
-| Atta | आटा, atta, aata |
-| Sugar | चीनी, chini, cheeni, sugar, शक्कर |
-| Cooking oil | तेल, tel, oil |
-| Milk | दूध, doodh, milk |
-| Dal | दाल, dal, daal |
-| Salt | नमक, namak, salt |
-| Biscuits | बिस्किट, बिस्कुट, biscuit(s) |
-
-Quantities support digits and a limited set of words from zero to ten, including `ek`, `do`, `teen`, `चार` / `chaar`, plus `aadha` / `आधा` (0.5), `dedh` / `डेढ़` (1.5), and `dhai` / `ढाई` (2.5). The supported units are kg/gram for rice, atta, sugar, dal, and salt; litre/ml for oil and milk; and packet for biscuits. Gram and ml values are normalized to the catalogue’s kg/litre unit.
-
-In the spoken-correction flow, `kar do` / `कर दो`, `set`, and `change to` mean **set** that product to the stated quantity. `aur jod do` / `और जोड़ दो`, `add`, and `add more` mean **add** the stated quantity to what is already in the order. For example, “chawal chaar kilo kar do” sets rice to 4 kg, while “do kilo chawal aur jod do” adds 2 kg. If a correction has no clear set or add instruction, BolBahi leaves the current line unchanged and asks for clarification. Correction markers such as `nahi`, `nahin`, `नहीं`, `actually`, and `correction` introduce the following correction clause; they do not retroactively change the preceding item. A valid set also clears that same product’s earlier missing-quantity or missing-unit warning. Removal phrases include `hata do`, `hatao`, `nikaal`, `remove`, `cancel`, `mat dena`, and `मत देना`. For example, “Do kilo chawal aur ek litre tel. Nahi, chawal teen kilo kar do” produces rice 3 kg and oil 1 litre; the rice quantities are not added together. Quantities stated in grams/ml convert to the item’s catalogue kg/litre unit before the operation is applied.
-
-If the parser cannot identify a product or unit, sees an unsupported phrase, or finds a missing or ambiguous quantity, it shows a clarification/review state. The shopkeeper can edit quantities and units, add a catalogue item, apply another spoken correction, and mark reviewed phrases. An order with incomplete item fields or unreviewed flags cannot be read back or saved.
-
-Prices are fixed **demo prices**, shown in the interface and on receipts. All price calculations and saved totals use integer paise with per-line rounding. Customer identity is the synthetic walk-in label `Walk-in #104`; no customer phone number or real personal data is requested.
-
-## Solo contribution
-
-This is a solo project led by one contributor. The contributor supplied the product scope, shop-counter workflow, design direction, parser rules, and bug reproductions. Codex was used as an AI coding assistant for implementation, test authoring, and documentation. No other human contributors are represented in this workspace.
-
-## Verification record
-
-### Automated checks
-
-Run the automated suite and frontend production build with:
-
-       npm.cmd test
-       npm.cmd run build
-
-The latest automated run passed all 25 tests and the production Vite build. In addition to parser, quantity, clarification, correction, removal, paise-total, confirmation, local-persistence, and missing Gnani configuration coverage, tests exercise DynamoDB conditional-save/history behavior and the Lambda bridge handling base64 multipart audio and binary WAV responses. AWS SDK calls are represented by a fake client in automated tests; these checks do not call live AWS or Gnani.
-
-### User-reported browser observations
-
-These observations were reported by the user after the parser fixes; they were not run or independently verified by Codex:
-
-- A spoken rice correction produced rice 4 kg plus oil 1 litre, total ₹405.
-- The confirmed ₹405 order appeared in receipts and history.
-- “Do packet” produced a missing-product warning without a guessed item.
+- A spoken correction produced rice 4 kg and oil 1 litre, total ₹405; the confirmed order appeared in receipts and history.
+- “Do packet” showed a missing-product warning without guessing an item.
 - Adding two packets of biscuits produced ₹20 at the demo price.
-- The user clicked Mark reviewed manually; clarification was not automatically resolved.
-- Audio playback correctness has not been explicitly confirmed.
+- The user manually clicked **Mark reviewed**; the app did not resolve that clarification automatically.
 
-### Optional live Gnani smoke test
+### Recent user-reported DEPLOYED browser tests
 
-The optional command is `npm.cmd run smoke`. When configured, it calls Timbre TTS and Prisma STT once each and may consume provider credits. It does not print the key or transcript. The smoke command was attempted once during this preparation, but the initial Timbre TTS request stopped with `EACCES` before receiving a provider response; Prisma STT was not attempted. No successful live Gnani response has been verified.
-## Storage and confirmation
+These deployed checks were reported by the user and are separate from automated tests and the earlier local checks:
 
-In local development, Express saves confirmed order details to data/orders.json on the machine running the app. The generated data/ directory is excluded from Git. In AWS, the SAM Lambda uses DynamoDB; the table is keyed by the read-back confirmation token, and a conditional write prevents duplicate receipts. A created-time index powers the latest 100 history entries. Point-in-time recovery is disabled for this demo, and the table is retained if the stack is removed. This workspace's existing local JSON history was moved byte-for-byte from the legacy server/data/orders.json path into ignored data/orders.json. Other legacy installations must move their file there before changing versions; that migration is not automatic.
+- Voice transcription and order review worked.
+- Spoken read-back and confirmation worked.
+- Receipts were saved and appeared in order history.
+- The deployed health endpoint returned `ok: true` and `speechConfigured: true`.
 
-Both storage paths keep the synthetic customer label, receipt data, catalogue item lines, integer-paise totals, and the confirmation token. Neither path stores raw audio. The browser fetches order history through the Express API; it does not use browser local storage. The UI requires a successful Gnani TTS response, completed playback, and an explicit confirmation click before saving. Changing the order invalidates the previous read-back token.
+The health result confirms configuration status only; by itself, it does not measure speech quality. The transcription and read-back results above are separate user-reported observations.
 
-## AWS deployment setup
+## AWS deployment
 
-The repository includes amplify.yml for the React/Vite frontend and template.yaml for the Express API on Lambda behind an API Gateway HTTP API, plus a DynamoDB orders table. Nothing has been deployed. The Amplify build publishes dist/ and reads only the public API URL from VITE_API_BASE_URL; the Gnani credential is never a Vite variable. The frontend uses relative /api requests locally through the Vite proxy and uses the configured base URL in Amplify.
+1. Create or connect the Amplify Hosting app and note its exact HTTPS branch origin. The SAM CORS setting expects the origin without a path or trailing slash.
+2. From the repository root, build and deploy the backend:
 
-### Required AWS settings
+```powershell
+sam validate --lint
+sam build
+sam deploy --guided --capabilities CAPABILITY_IAM --parameter-overrides "AmplifyOrigin=https://YOUR_AMPLIFY_BRANCH_HOST"
+```
 
-- Use an AWS account/region with AWS CLI, AWS SAM CLI, and Node.js 20 or newer available. Root npm dependencies are used for local development; SAM installs the pinned backend dependencies from `server/package.json` and `server/package-lock.json` when it builds the Lambda artifact.
-- After deployment, set `GNANI_API_KEY` privately in the Lambda console under **Configuration → Environment variables → Edit** for `BolBahiApiFunction`. Lambda exposes the value to the backend as `process.env.GNANI_API_KEY`; it is intentionally absent from the SAM template and deployment parameters. AWS encrypts Lambda environment variables at rest. Restrict access to the Lambda configuration to trusted operators. After every SAM deployment or function configuration update, verify the variable is still present before using speech; template updates can replace console-edited environment settings. See [Lambda environment variables](https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars.html).
-- Create or connect the Amplify Hosting app first so its branch HTTPS origin is known. The CORS parameter must be the exact origin, without a trailing slash or path. Local Vite origin is allowed separately for development.
-- The Lambda uses the nodejs22.x runtime and its runtime-provided AWS SDK for JavaScript v3 to access DynamoDB. Its role can only GetItem and PutItem on the table and Query on the history index. It cannot scan the table.
-- The public API currently has no shopkeeper sign-in or authorization. CORS controls browser origins but is not authentication. Add an identity/authorization layer and abuse controls before using it for real customer orders or provider-credit-bearing traffic.
+3. Record the `ApiBaseUrl` stack output. In Amplify branch environment settings, set `VITE_API_BASE_URL` to that URL and rebuild the frontend.
+4. In the deployed Lambda console, open **Configuration → Environment variables → Edit**, add `GNANI_API_KEY`, enter the value privately, and save. The key is configured only in the backend Lambda environment; it is not in the SAM template, deployment parameters, commands, Amplify settings, or frontend code. After every future deployment or function configuration update, verify that `GNANI_API_KEY` is still present and restore it in the console if needed.
 
-### Build and deploy when ready
+The SAM `CodeUri` is `server/`; the project-root `.env` and local `data/` are outside the Lambda package. DynamoDB uses a conditional write to prevent duplicate receipts, and the table is retained if the stack is removed. Point-in-time recovery is disabled for this demo.
 
-1. From the repository root, install the frontend dependencies and run the checks. SAM uses the separately pinned backend dependency lockfile:
+The Lambda role is limited to `GetItem` and `PutItem` on the orders table and `Query` on the history index.
 
-       npm.cmd ci
-       npm.cmd test
-       npm.cmd run build
-       sam validate --lint
-       sam build
+<details>
+<summary>Gnani speech endpoints and audio handling</summary>
 
-   `sam build` uses `server/package.json`, `server/package-lock.json`, and esbuild to create the Lambda artifact. The SAM `CodeUri` is the `server/` folder, so the project-root `.env` file and local `data/` order history are outside the Lambda deployment package.
+| Task | Endpoint and model | Request and response |
+| --- | --- | --- |
+| Speech-to-text | `POST https://api.vachana.ai/stt/v3`, `prisma-v3.0` | Backend sends `X-API-Key-ID` and multipart audio with `language_code=indic-auto`, `format=codemix`, and catalogue terms. Gnani returns JSON including the transcript. |
+| Text-to-speech | `POST https://api.vachana.ai/api/v1/tts/inference`, `timbre-v2.5`, voice `Poorvi`, language `hi-en` | Backend sends JSON and `X-API-Key-ID`; Gnani returns WAV audio. |
 
-2. Deploy the backend when AWS resources are approved. Replace the uppercase placeholder with the Amplify branch origin:
+The browser converts recordings to mono 16 kHz PCM WAV before upload. It stops recording at 25 seconds. Express accepts WAV up to 30 seconds and 8 MiB locally; the Lambda deployment caps uploads and binary audio responses at 4 MiB. Audio is held in memory for processing and is not persisted.
 
-       sam deploy --guided --capabilities CAPABILITY_IAM --parameter-overrides "AmplifyOrigin=https://YOUR_AMPLIFY_BRANCH_HOST"
+</details>
 
-   The guided deployment creates the API, Lambda function, and DynamoDB table. Record the ApiBaseUrl stack output.
+<details>
+<summary>API Gateway binary payloads and timeouts</summary>
 
-3. In the deployed Lambda console, open **Configuration → Environment variables → Edit**, add `GNANI_API_KEY`, enter the real value directly in the console, and save. Do not put the key in the SAM template, a SAM parameter, a command, Amplify, frontend code, build logs, or Git. After future deployments, check this setting again and restore it in the console if needed.
+API Gateway HTTP API v2 represents binary request bodies as base64; the Lambda adapter decodes multipart audio before Express parses it. TTS audio is returned as a base64 encoded Lambda proxy response for API Gateway to restore as audio bytes. CORS exposes `X-Readback-Token` so the browser can confirm the exact read-back.
 
-4. In Amplify Hosting branch environment settings, set `VITE_API_BASE_URL` to the ApiBaseUrl output. This value is a public endpoint URL, not a credential. Rebuild the branch after changing it.
+The Lambda upload and response caps are 4 MiB. AWS documents a 10 MB HTTP API payload limit, a 30 second HTTP API integration timeout, and a 6 MB synchronous Lambda invocation request/response limit. The 4 MiB audio caps leave room for base64 expansion inside the Lambda event and response. The Gnani request timeout is 24 seconds, Lambda is configured for 28 seconds, and the API integration for 29 seconds. Over-limit or failed speech requests return errors and do not save orders.
 
-For local development, keep the existing .env as-is and continue using npm.cmd run dev; Express reads GNANI_API_KEY from that backend-only file. The Vite proxy works without VITE_API_BASE_URL. Do not commit .env. .gitignore excludes .env, data/, legacy server/data/, .aws-sam/, and local SAM/npm working files.
+</details>
 
-### Audio and API Gateway limits
+## Limitations and future improvements
 
-The browser records at most 25 seconds and converts the recording to mono 16 kHz PCM WAV before upload. The Lambda deployment accepts at most 4 MiB of WAV upload and 4 MiB of binary audio response. The body is decoded from API Gateway's base64 event representation before Express parses multipart form data. WAV TTS output is returned in a Lambda proxy response with isBase64Encoded: true; API Gateway turns it back into audio bytes for the browser. The SAM CORS configuration exposes X-Readback-Token, which the browser needs to confirm the exact read-back.
+- The parser supports only the catalogue and phrase patterns listed here; unsupported or ambiguous wording needs human review.
+- **Mark reviewed** is a manual shopkeeper action, not automatic clarification resolution.
+- Catalogue prices are fixed demo prices and may not match a shop’s prices.
+- The deployed API has no authentication or shop isolation. CORS is not authentication; add identity and per-shop data isolation before using it for real shops or customer orders.
+- Customer information is synthetic (`Walk-in #104`). The app does not store raw audio.
+- No performance benchmark or comprehensive language-accuracy claim is made.
 
-AWS documents a 10 MB HTTP API payload limit and 30 second integration timeout, and a 6 MB synchronous Lambda invocation request and response limit. Because binary proxy bodies use base64 inside the Lambda event/response, the 4 MiB audio caps leave space for base64 expansion and API metadata. SAM sets the API integration timeout to 29 seconds; Lambda times out at 28 seconds and its Gnani HTTP timeout is 24 seconds so an upstream call does not exceed the gateway window. Over-limit or failed speech requests return an error and do not create a transcript, audio result, or order. See [HTTP API quotas](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-quotas.html), [Lambda quotas](https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-limits.html), [SAM HTTP API CORS](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-property-httpapi-httpapicorsconfiguration.html), and [Amplify build settings](https://docs.aws.amazon.com/amplify/latest/userguide/build-settings.html).
+Potential next steps include authentication and shop-level isolation, configurable per-shop catalogue and prices, and expanding parser coverage with more regression tests.
 
-SAM template validation (`sam validate --lint`) passed. A direct esbuild bundle of the Lambda entry passed, and `server/package-lock.json` validates offline. The full `sam build` could not complete in this workspace: its online attempt exited with npm's “Exit handler never called”; an offline retry confirmed the locked `vary@1.1.2` tarball is not cached (`ENOTCACHED`) and emitted Windows temporary-directory cleanup warnings (`EPERM`). No AWS deployment or live Lambda/API Gateway/DynamoDB test was run. The live Gnani smoke attempt also remains unverified because its first request stopped with `EACCES` before a provider response.
+### Contribution disclosure
+
+This is a solo project. The contributor supplied the product scope, shop-counter workflow, design direction, parser rules, and bug reproductions. Codex was used as an AI coding assistant for implementation, tests, and documentation.
