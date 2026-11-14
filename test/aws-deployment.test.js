@@ -233,8 +233,11 @@ test('oversized TTS output is rejected before issuing a read-back token', async 
   assert.equal(savedOrders, 0);
 });
 
-test('SAM template keeps audio, CORS, secrets, and DynamoDB access bounded', async () => {
+test('SAM template keeps audio, CORS, environment, and DynamoDB access bounded', async () => {
   const template = await readFile(new URL('../template.yaml', import.meta.url), 'utf8');
+  const backendManifest = await readFile(new URL('../server/package.json', import.meta.url), 'utf8');
+  const backendLock = await readFile(new URL('../server/package-lock.json', import.meta.url), 'utf8');
+  const lambdaSource = await readFile(new URL('../server/lambda.js', import.meta.url), 'utf8');
   assert.match(template, /MAX_AUDIO_BYTES: '4194304'/);
   assert.match(template, /MAX_BINARY_RESPONSE_BYTES: '4194304'/);
   assert.match(template, /UPSTREAM_TIMEOUT_MS: '24000'/);
@@ -245,8 +248,15 @@ test('SAM template keeps audio, CORS, secrets, and DynamoDB access bounded', asy
   assert.match(template, /ExposeHeaders:[\s\S]*x-readback-token/);
   assert.match(template, /CodeUri: server/);
   assert.match(template, /Handler: lambda\.handler/);
-  assert.match(template, /GNANI_API_KEY_SECRET_ARN: !Ref GnaniApiKeySecretArn/);
-  assert.match(template, /secretsmanager:GetSecretValue/);
+  assert.match(template, /Format: esm[\s\S]*OutExtension:[\s\S]*- \.js=\.mjs/);
+  assert.doesNotMatch(template, /^\s+- (?:dotenv|express|multer)$/m);
+  assert.match(template, /External:[\s\S]*@aws-sdk\/client-dynamodb/);
+  assert.ok(lambdaSource.indexOf('globalThis.require ??=') < lambdaSource.indexOf("await import('./index.js')"));
+  assert.doesNotMatch(template, /GnaniApiKeySecretArn|GNANI_API_KEY_SECRET_ARN|secretsmanager:/i);
+  assert.doesNotMatch(template, /GNANI_API_KEY\s*:/);
+  assert.doesNotMatch(backendManifest, /secretsmanager/i);
+  assert.doesNotMatch(backendLock, /@aws-sdk\/client-secrets-manager/i);
+  assert.match(template, /PointInTimeRecoveryEnabled: false/);
   assert.match(template, /dynamodb:GetItem/);
   assert.match(template, /dynamodb:PutItem/);
   assert.match(template, /dynamodb:Query/);

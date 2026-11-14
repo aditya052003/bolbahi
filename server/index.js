@@ -80,7 +80,7 @@ export function createApp({
     }
     response.status(503).json({ error: speechConfigured()
       ? 'Gnani speech is temporarily unavailable. Please try again later.'
-      : 'Gnani speech is not configured. Contact the shop administrator.' });
+      : 'Gnani configuration error: GNANI_API_KEY is missing from the backend environment.' });
     return null;
   }
 

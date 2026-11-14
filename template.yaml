@@ -7,10 +7,6 @@ Parameters:
     Type: String
     Description: Exact HTTPS origin of the deployed Amplify branch, without a trailing slash or path.
     AllowedPattern: '^https://[^/]+$'
-  GnaniApiKeySecretArn:
-    Type: String
-    Description: ARN of a Secrets Manager secret whose SecretString is the Gnani API key.
-    AllowedPattern: '^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$'
   LocalDevOrigin:
     Type: String
     Default: http://localhost:5173
@@ -24,7 +20,6 @@ Globals:
     Environment:
       Variables:
         ORDERS_TABLE_NAME: !Ref OrdersTable
-        GNANI_API_KEY_SECRET_ARN: !Ref GnaniApiKeySecretArn
         MAX_AUDIO_BYTES: '4194304'
         MAX_BINARY_RESPONSE_BYTES: '4194304'
         UPSTREAM_TIMEOUT_MS: '24000'
@@ -85,23 +80,20 @@ Resources:
               Action:
                 - dynamodb:Query
               Resource: !Sub '${OrdersTable.Arn}/index/orders-by-created'
-            - Sid: ReadGnaniApiKeyOnly
-              Effect: Allow
-              Action:
-                - secretsmanager:GetSecretValue
-              Resource: !Ref GnaniApiKeySecretArn
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
         EntryPoints:
           - lambda.js
         Format: esm
+        OutExtension:
+          - .js=.mjs
         Target: es2022
         Minify: false
         Sourcemap: false
         External:
+          # Node.js 22 Lambda includes AWS SDK for JavaScript v3.
           - '@aws-sdk/client-dynamodb'
-          - '@aws-sdk/client-secrets-manager'
 
   OrdersTable:
     Type: AWS::DynamoDB::Table
@@ -129,7 +121,7 @@ Resources:
           Projection:
             ProjectionType: ALL
       PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: true
+        PointInTimeRecoveryEnabled: false
 
 Outputs:
   ApiBaseUrl:

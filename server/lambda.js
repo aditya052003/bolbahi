@@ -1,6 +1,11 @@
+import { createRequire } from 'node:module';
 import { createServer, request as httpRequest } from 'node:http';
-import { createApp } from './index.js';
-import { createDynamoOrderRepository } from './order-repository.js';
+
+// Esbuild's ESM bundle uses a dynamic-require shim for CommonJS dependencies.
+// Initialize it before importing the Express app and its CommonJS dependencies.
+globalThis.require ??= createRequire(import.meta.url);
+const { createApp } = await import('./index.js');
+const { createDynamoOrderRepository } = await import('./order-repository.js');
 
 const DEFAULT_MAX_BINARY_RESPONSE_BYTES = 4 * 1024 * 1024;
 
