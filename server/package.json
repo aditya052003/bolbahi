@@ -1,0 +1,12 @@
+{
+  "name": "bolbahi-lambda-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "dotenv": "16.6.1",
+    "esbuild": "0.25.12",
+    "express": "4.22.3",
+    "multer": "2.5.0"
+  }
+}

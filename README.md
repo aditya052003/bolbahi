@@ -7,7 +7,7 @@ BolBahi is a voice-first order pad for an Indian kirana counter. It records a sh
 Use Node.js 20 or newer. On Windows PowerShell, use `npm.cmd` if the `npm` command is blocked.
 
 ```powershell
-npm.cmd install
+       npm.cmd install
 ```
 
 The existing `.env` is read by the Express backend and should not be overwritten. If this folder has no `.env`, copy `.env.example` to `.env`, then add your Gnani API key to the backend variable `GNANI_API_KEY`. Do not put the key in frontend files or browser settings. Restart the server after changing it.
@@ -62,53 +62,75 @@ Prices are fixed **demo prices**, shown in the interface and on receipts. All pr
 
 This is a solo project led by one contributor. The contributor supplied the product scope, shop-counter workflow, design direction, parser rules, and bug reproductions. Codex was used as an AI coding assistant for implementation, test authoring, and documentation. No other human contributors are represented in this workspace.
 
-## Storage and confirmation
-
-The Express backend writes confirmed order details to `server/data/orders.json` on the machine running the app server; the browser does not store orders in browser-local storage. In local development this is the same machine as the browser. The saved records include the synthetic customer label, receipt data, item lines, integer-paise totals, and the confirmation token used to prevent duplicate saves. They do not include raw audio. The generated `server/data/` directory is excluded by `.gitignore`. A read-back token is issued only after a successful Gnani TTS response and is bound to the exact item quantities and units. The save endpoint also requires `confirmed: true`; the UI only enables its confirmation button after audio playback finishes. Reusing the same confirmation token returns the saved order instead of creating a duplicate.
-
 ## Verification record
 
 ### Automated checks
 
-```powershell
-npm.cmd test
-npm.cmd run build
-```
+Run the automated suite and frontend production build with:
 
-The latest automated run passed all 18 tests and the production build. Tests cover correction replacement and addition, removals, Roman and Devanagari quantities, `aadha` and `dedh`, missing and ambiguous order details, integer-paise totals, confirmation/read-back requirements, local persistence, and duplicate-save protection. These automated checks do not exercise browser microphone permissions or prove live Gnani API access.
+       npm.cmd test
+       npm.cmd run build
 
-### Manual browser observations
+The latest automated run passed all 23 tests and the production Vite build. In addition to parser, quantity, clarification, correction, removal, paise-total, confirmation, and local-persistence coverage, tests exercise DynamoDB conditional-save/history behavior and the Lambda bridge handling base64 multipart audio and binary WAV responses. AWS SDK calls are represented by a fake client in automated tests; these checks do not call live AWS or Gnani.
 
-The following observations were reported by the user after the parser fixes. They were not run or independently verified by Codex:
+### User-reported browser observations
 
-- A spoken rice correction produced rice 4 kg plus oil 1 litre, with an order total of ₹405.
-- The confirmed ₹405 order appeared in receipts and order history.
-- “Do packet” showed a missing-product warning and did not guess an item.
-- Adding two packets of biscuits produced ₹20 at the current demo price.
-- The user clicked **Mark reviewed** manually; clarification/review is not automatic.
+These observations were reported by the user after the parser fixes; they were not run or independently verified by Codex:
+
+- A spoken rice correction produced rice 4 kg plus oil 1 litre, total ₹405.
+- The confirmed ₹405 order appeared in receipts and history.
+- “Do packet” produced a missing-product warning without a guessed item.
+- Adding two packets of biscuits produced ₹20 at the demo price.
+- The user clicked Mark reviewed manually; clarification was not automatically resolved.
 - Audio playback correctness has not been explicitly confirmed.
 
-These are manual browser observations, separate from the automated suite. The deterministic parser has bounded catalogue coverage and should not be treated as comprehensive Hindi/Hinglish understanding.
+### Optional live Gnani smoke test
 
-### Optional live-provider smoke test
+The optional command is `npm.cmd run smoke`. When configured, it calls Timbre TTS and Prisma STT once each and may consume provider credits. It does not print the key or transcript. The smoke command was attempted once during this preparation, but the initial Timbre TTS request stopped with `EACCES` before receiving a provider response; Prisma STT was not attempted. No successful live Gnani response has been verified.
+## Storage and confirmation
 
-The smoke test is separate from the automated suite:
+In local development, Express saves confirmed order details to data/orders.json on the machine running the app. The generated data/ directory is excluded from Git. In AWS, the SAM Lambda uses DynamoDB; the table is keyed by the read-back confirmation token, and a conditional write prevents duplicate receipts. A created-time index powers the latest 100 history entries. The table has point-in-time recovery enabled and is retained if the stack is removed. This workspace's existing local JSON history was moved byte-for-byte from the legacy server/data/orders.json path into ignored data/orders.json. Other legacy installations must move their file there before changing versions; that migration is not automatic.
 
-```powershell
-npm.cmd run smoke
-```
+Both storage paths keep the synthetic customer label, receipt data, catalogue item lines, integer-paise totals, and the confirmation token. Neither path stores raw audio. The browser fetches order history through the Express API; it does not use browser local storage. The UI requires a successful Gnani TTS response, completed playback, and an explicit confirmation click before saving. Changing the order invalidates the previous read-back token.
 
-If `GNANI_API_KEY` is unavailable, the smoke test reports that it was skipped. When configured, it makes one Timbre TTS request to produce a short spoken sample and one Prisma STT request to transcribe that audio; this consumes provider usage/credits. It prints only the outcome and model names, not the key or transcript. A smoke-test attempt in this workspace did not verify successful provider responses. Build/tests do not verify microphone behavior or live credentials.
+## AWS deployment setup
 
-## Available deployment setup
+The repository includes amplify.yml for the React/Vite frontend and template.yaml for the Express API on Lambda behind an API Gateway HTTP API, plus a DynamoDB orders table. Nothing has been deployed. The Amplify build publishes dist/ and reads only the public API URL from VITE_API_BASE_URL; the Gnani credential is never a Vite variable. The frontend uses relative /api requests locally through the Vite proxy and uses the configured base URL in Amplify.
 
-No hosting provider, Docker image, CI deployment workflow, or publishing configuration is included. Local production serving is available through the Express static-file path after building:
+### Required AWS settings
 
-```powershell
-npm.cmd run build
-$env:NODE_ENV = "production"
-npm.cmd start
-```
+- Use an AWS account/region with AWS CLI, AWS SAM CLI, and Node.js 20 or newer available. Root npm dependencies are used for local development; SAM installs the pinned backend dependencies from `server/package.json` and `server/package-lock.json` when it builds the Lambda artifact.
+- Create a Secrets Manager secret with the raw Gnani key as its SecretString and the default AWS managed encryption key. Use the AWS console secret-value form; using a customer-managed KMS key would require adding a resource-scoped `kms:Decrypt` grant to the Lambda role. Do not put the key in a command, template parameter, Amplify setting, build log, or frontend variable. Pass only that secret ARN to SAM. Lambda reads it server-side with the narrowly scoped `secretsmanager:GetSecretValue` permission and caches it in memory for up to five minutes.
+- Create or connect the Amplify Hosting app first so its branch HTTPS origin is known. The CORS parameter must be the exact origin, without a trailing slash or path. Local Vite origin is allowed separately for development.
+- The Lambda uses the nodejs22.x runtime and its runtime-provided AWS SDK for JavaScript v3 to access DynamoDB and Secrets Manager. Its role can only GetItem and PutItem on the table, Query on the history index, and read the configured secret. It cannot scan the table or list/read other secrets. See [Lambda Node.js runtime and SDK](https://docs.aws.amazon.com/lambda/latest/dg/lambda-nodejs.html).
+- The public API currently has no shopkeeper sign-in or authorization. CORS controls browser origins but is not authentication. Add an identity/authorization layer and abuse controls before using it for real customer orders or provider-credit-bearing traffic.
 
-Express serves `dist/` on `PORT` (default `3001`) and reads `GNANI_API_KEY` from the backend environment. This documents the available local production mode; the application has not been deployed or published.
+### Build and deploy when ready
 
+1. From the repository root, install the frontend dependencies and run the checks. SAM uses the separately pinned backend dependency lockfile:
+
+       npm.cmd ci
+       npm.cmd test
+       npm.cmd run build
+       sam validate --lint
+       sam build
+
+   `sam build` uses `server/package.json`, `server/package-lock.json`, and esbuild to create the Lambda artifact. The SAM `CodeUri` is the `server/` folder, so the project-root `.env` file and local `data/` order history are outside the Lambda deployment package.
+
+2. Deploy the backend when AWS resources are approved. Replace the uppercase placeholders with the Amplify branch origin and Secrets Manager ARN; these are identifiers, not credentials:
+
+       sam deploy --guided --capabilities CAPABILITY_IAM --parameter-overrides "AmplifyOrigin=https://YOUR_AMPLIFY_BRANCH_HOST" "GnaniApiKeySecretArn=arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:SECRET_NAME"
+
+   The guided deployment creates the API, Lambda function, and DynamoDB table. Record the ApiBaseUrl stack output.
+
+3. In Amplify Hosting branch environment settings, set VITE_API_BASE_URL to the ApiBaseUrl output. This value is a public endpoint URL, not a credential. Do not add GNANI_API_KEY or the secret value to Amplify. Rebuild the branch after changing the variable.
+
+For local development, keep the existing .env as-is and continue using npm.cmd run dev; Express reads GNANI_API_KEY from that backend-only file. The Vite proxy works without VITE_API_BASE_URL. Do not commit .env. .gitignore excludes .env, data/, legacy server/data/, .aws-sam/, and local SAM/npm working files.
+
+### Audio and API Gateway limits
+
+The browser records at most 25 seconds and converts the recording to mono 16 kHz PCM WAV before upload. The Lambda deployment accepts at most 4 MiB of WAV upload and 4 MiB of binary audio response. The body is decoded from API Gateway's base64 event representation before Express parses multipart form data. WAV TTS output is returned in a Lambda proxy response with isBase64Encoded: true; API Gateway turns it back into audio bytes for the browser. The SAM CORS configuration exposes X-Readback-Token, which the browser needs to confirm the exact read-back.
+
+AWS documents a 10 MB HTTP API payload limit and 30 second integration timeout, and a 6 MB synchronous Lambda invocation request and response limit. Because binary proxy bodies use base64 inside the Lambda event/response, the 4 MiB audio caps leave space for base64 expansion and API metadata. SAM sets the API integration timeout to 29 seconds; Lambda times out at 28 seconds and its Gnani HTTP timeout is 24 seconds so an upstream call does not exceed the gateway window. Over-limit or failed speech requests return an error and do not create a transcript, audio result, or order. See [HTTP API quotas](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-quotas.html), [Lambda quotas](https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-limits.html), [SAM HTTP API CORS](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-property-httpapi-httpapicorsconfiguration.html), and [Amplify build settings](https://docs.aws.amazon.com/amplify/latest/userguide/build-settings.html).
+
+SAM template validation (`sam validate --lint`) passed. A direct esbuild bundle of the Lambda entry passed, and `server/package-lock.json` validates offline. The full `sam build` could not complete in this workspace: the locked `vary@1.1.2` tarball is not cached, while npm registry access is unavailable here (`ENOTCACHED`). No AWS deployment or live Lambda/API Gateway/DynamoDB test was run. The live Gnani smoke attempt also remains unverified because its first request stopped with `EACCES` before a provider response.

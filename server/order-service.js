@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { CATALOG, priceForQuantityPaise } from '../shared/catalog.js';
+import { CATALOG, priceForQuantityPaise } from './catalog.js';
+import { createJsonOrderRepository } from './order-repository.js';
 
 export class OrderValidationError extends Error {
   constructor(message) {
@@ -44,36 +43,18 @@ export function normalizeOrder(items) {
 }
 
 function publicOrder(order) {
-  const { confirmationToken, ...safe } = order;
+  const { confirmationToken, historyPartition, historySort, ...safe } = order;
   return safe;
 }
 
-export function createOrderService({ storagePath, now = () => new Date() }) {
+export function createOrderService({ storagePath, repository, now = () => new Date() }) {
+  const orders = repository ?? createJsonOrderRepository(storagePath);
   const readbacks = new Map();
-  let writeQueue = Promise.resolve();
-
-  async function readOrders() {
-    try {
-      const contents = await readFile(storagePath, 'utf8');
-      const parsed = JSON.parse(contents);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (error) {
-      if (error.code === 'ENOENT') return [];
-      throw error;
-    }
-  }
-
-  async function persist(orders) {
-    await mkdir(dirname(storagePath), { recursive: true });
-    const temporaryPath = `${storagePath}.tmp`;
-    await writeFile(temporaryPath, `${JSON.stringify(orders, null, 2)}\n`, 'utf8');
-    await rename(temporaryPath, storagePath);
-  }
 
   return {
     async list() {
-      const orders = await readOrders();
-      return orders.slice().reverse().map(publicOrder);
+      const savedOrders = await orders.list();
+      return savedOrders.slice().reverse().map(publicOrder);
     },
     async prepareReadback(items) {
       return normalizeOrder(items);
@@ -90,8 +71,7 @@ export function createOrderService({ storagePath, now = () => new Date() }) {
         throw new OrderValidationError('Read the order aloud before confirming it.');
       }
 
-      const priorOrders = await readOrders();
-      const prior = priorOrders.find((order) => order.confirmationToken === readbackToken);
+      const prior = await orders.getByConfirmationToken(readbackToken);
       if (prior) return { order: publicOrder(prior), duplicate: true };
 
       const readback = readbacks.get(readbackToken);
@@ -112,16 +92,9 @@ export function createOrderService({ storagePath, now = () => new Date() }) {
         confirmationToken: readbackToken,
       };
 
-      writeQueue = writeQueue.then(async () => {
-        const latest = await readOrders();
-        const concurrentDuplicate = latest.find((saved) => saved.confirmationToken === readbackToken);
-        if (concurrentDuplicate) return concurrentDuplicate;
-        await persist([...latest, order]);
-        return order;
-      });
-      const saved = await writeQueue;
+      const saved = await orders.saveIfAbsent(order);
       readbacks.delete(readbackToken);
-      return { order: publicOrder(saved), duplicate: saved.id !== order.id };
+      return { order: publicOrder(saved.order), duplicate: saved.duplicate };
     },
   };
 }

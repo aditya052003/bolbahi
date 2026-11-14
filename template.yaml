@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: BolBahi kirana voice-order API (Amplify frontend, Lambda, HTTP API, DynamoDB)
+
+Parameters:
+  AmplifyOrigin:
+    Type: String
+    Description: Exact HTTPS origin of the deployed Amplify branch, without a trailing slash or path.
+    AllowedPattern: '^https://[^/]+$'
+  GnaniApiKeySecretArn:
+    Type: String
+    Description: ARN of a Secrets Manager secret whose SecretString is the Gnani API key.
+    AllowedPattern: '^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$'
+  LocalDevOrigin:
+    Type: String
+    Default: http://localhost:5173
+    Description: Local Vite origin for development against this API.
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Timeout: 28
+    MemorySize: 1024
+    Environment:
+      Variables:
+        ORDERS_TABLE_NAME: !Ref OrdersTable
+        GNANI_API_KEY_SECRET_ARN: !Ref GnaniApiKeySecretArn
+        MAX_AUDIO_BYTES: '4194304'
+        MAX_BINARY_RESPONSE_BYTES: '4194304'
+        UPSTREAM_TIMEOUT_MS: '24000'
+        NODE_ENV: production
+
+Resources:
+  BolBahiHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: '$default'
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref AmplifyOrigin
+          - !Ref LocalDevOrigin
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - content-type
+        ExposeHeaders:
+          - x-readback-token
+        MaxAge: 600
+        AllowCredentials: false
+      DefinitionBody:
+        openapi: 3.0.1
+        info:
+          title: BolBahi API
+          version: '1.0'
+        paths: {}
+
+  BolBahiApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: server
+      Handler: lambda.handler
+      Architectures:
+        - x86_64
+      Events:
+        ApiProxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BolBahiHttpApi
+            Path: /{proxy+}
+            Method: ANY
+            PayloadFormatVersion: '2.0'
+            TimeoutInMillis: 29000
+      Policies:
+        - Statement:
+            - Sid: ReadWriteOrderRecordsOnly
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource: !GetAtt OrdersTable.Arn
+            - Sid: ReadRecentOrderHistoryIndexOnly
+              Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource: !Sub '${OrdersTable.Arn}/index/orders-by-created'
+            - Sid: ReadGnaniApiKeyOnly
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref GnaniApiKeySecretArn
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - lambda.js
+        Format: esm
+        Target: es2022
+        Minify: false
+        Sourcemap: false
+        External:
+          - '@aws-sdk/client-dynamodb'
+          - '@aws-sdk/client-secrets-manager'
+
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: confirmationToken
+          AttributeType: S
+        - AttributeName: historyPartition
+          AttributeType: S
+        - AttributeName: historySort
+          AttributeType: S
+      KeySchema:
+        - AttributeName: confirmationToken
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: orders-by-created
+          KeySchema:
+            - AttributeName: historyPartition
+              KeyType: HASH
+            - AttributeName: historySort
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+Outputs:
+  ApiBaseUrl:
+    Description: Set this URL as the Amplify VITE_API_BASE_URL environment variable.
+    Value: !Sub 'https://${BolBahiHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+  OrdersTableName:
+    Description: DynamoDB table storing confirmed orders.
+    Value: !Ref OrdersTable

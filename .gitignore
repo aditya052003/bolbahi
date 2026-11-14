@@ -4,3 +4,7 @@ node_modules/
 !.env.example
 dist/
 server/data/
+/data/
+.aws-sam/
+.npm-cache/
+.sam-cli-profile/

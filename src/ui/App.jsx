@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CATALOG, priceForQuantityPaise } from '../../shared/catalog.js';
 import { applyCorrection, parseSpokenOrder } from '../../shared/order-parser.js';
+import { apiUrl } from '../api.js';
 
 const MAX_RECORD_SECONDS = 25;
 
@@ -43,6 +44,7 @@ function Icon({ name, size = 20 }) {
 function App() {
   const [view, setView] = useState('order');
   const [speechConfigured, setSpeechConfigured] = useState(null);
+  const [maxAudioBytes, setMaxAudioBytes] = useState(8 * 1024 * 1024);
   const [history, setHistory] = useState([]);
   const [historyError, setHistoryError] = useState('');
   const [transcript, setTranscript] = useState('');
@@ -71,9 +73,12 @@ function App() {
   const readbackInFlightRef = useRef(false);
 
   useEffect(() => {
-    fetch('/api/health')
+    fetch(apiUrl('/api/health'))
       .then((response) => response.json())
-      .then((payload) => setSpeechConfigured(Boolean(payload.speechConfigured)))
+      .then((payload) => {
+        setSpeechConfigured(Boolean(payload.speechConfigured));
+        if (Number.isInteger(payload.maxAudioBytes) && payload.maxAudioBytes > 0) setMaxAudioBytes(payload.maxAudioBytes);
+      })
       .catch(() => setSpeechConfigured(false));
     loadHistory();
   }, []);
@@ -92,7 +97,7 @@ function App() {
     setIsLoadingHistory(true);
     setHistoryError('');
     try {
-      const response = await fetch('/api/orders');
+      const response = await fetch(apiUrl('/api/orders'));
       if (!response.ok) throw new Error(await responseError(response, 'Order history could not be loaded.'));
       const payload = await response.json();
       setHistory(Array.isArray(payload.orders) ? payload.orders : []);
@@ -256,10 +261,10 @@ function App() {
     setSpeechError('Converting audio to WAV and sending it to Gnani…');
     try {
       const wav = await transcodeRecording(blob);
-      if (wav.size > 8 * 1024 * 1024) throw new Error('This recording is too large to upload. Please record a shorter order.');
+      if (wav.size > maxAudioBytes) throw new Error('This recording is too large to upload. Please record a shorter order.');
       const form = new FormData();
       form.append('audio_file', wav, 'order.wav');
-      const response = await fetch('/api/transcribe', { method: 'POST', body: form });
+      const response = await fetch(apiUrl('/api/transcribe'), { method: 'POST', body: form });
       if (!response.ok) throw new Error(await responseError(response, 'The recording could not be transcribed. Please try again.'));
       const payload = await response.json();
       const actualTranscript = payload.transcript?.trim();
@@ -278,7 +283,7 @@ function App() {
   async function beginRecording(purpose) {
     setSpeechError('');
     if (!speechConfigured) {
-      setSpeechError('Gnani speech is not configured. Add GNANI_API_KEY to the backend .env file, then restart BolBahi. No sample transcript will be substituted.');
+      setSpeechError('Gnani speech is not configured. Contact the shop administrator. No sample transcript will be substituted.');
       setRecordState('error');
       return;
     }
@@ -350,7 +355,7 @@ function App() {
     setReadbackComplete(false);
     setReadbackToken('');
     try {
-      const response = await fetch('/api/tts/readback', {
+      const response = await fetch(apiUrl('/api/tts/readback'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items: liveItems.map(({ productId, quantityMilli, unit }) => ({ productId, quantityMilli, unit })) }),
@@ -391,7 +396,7 @@ function App() {
     setSaving(true);
     setSaveError('');
     try {
-      const response = await fetch('/api/orders', {
+      const response = await fetch(apiUrl('/api/orders'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -498,7 +503,7 @@ function App() {
             </section>
 
             <aside className="side-column">
-              <div className="side-card today-card"><div className="side-card-header"><span className="side-icon"><Icon name="receipt" size={19}/></span><span className="tiny-label">TODAY AT THE COUNTER</span></div><strong className="stat-number">{history.length}</strong><span className="stat-caption">orders saved locally</span><button className="side-link" onClick={() => { setView('history'); loadHistory(); }}>See order history <Icon name="arrow" size={15}/></button></div>
+              <div className="side-card today-card"><div className="side-card-header"><span className="side-icon"><Icon name="receipt" size={19}/></span><span className="tiny-label">TODAY AT THE COUNTER</span></div><strong className="stat-number">{history.length}</strong><span className="stat-caption">orders in history</span><button className="side-link" onClick={() => { setView('history'); loadHistory(); }}>See order history <Icon name="arrow" size={15}/></button></div>
               <div className="side-card guide-card"><div className="guide-heading"><span className="guide-icon"><Icon name="spark" size={17}/></span><div><span className="tiny-label">QUICK TIP</span><strong>Speak it your way</strong></div></div><p>Start with quantity and item. Corrections replace an earlier quantity.</p><div className="example-phrase"><span>“Do kilo chawal… Nahi, chawal teen kilo.”</span><span className="example-arrow">↓</span><strong>Rice · 3 kg</strong></div></div>
               <div className="side-card catalogue-card"><span className="tiny-label">SUPPORTED ITEMS</span><div className="catalogue-tags">{CATALOG.map((product) => <span key={product.id}>{product.hindi}</span>)}</div><div className="demo-price-note"><span>₹</span><p>All catalogue prices are fixed demo prices and may not match your shop.</p></div></div>
               <div className="privacy-note"><span className="privacy-dot"/><span>Order audio is processed for transcription and not stored. Confirmed order details are saved by the app server.</span></div>
@@ -513,7 +518,7 @@ function App() {
 
 function HistoryView({ orders, loading, error, selectedReceipt, onSelect, onRefresh, onNew }) {
   if (selectedReceipt) return <ReceiptView receipt={selectedReceipt} onNew={onNew} onHistory={() => onSelect(null)} isHistory />;
-  return <section className="card history-card"><div className="card-topline"><div><p className="eyebrow">SAVED LOCALLY</p><h2>Recent orders</h2><p className="muted">Confirmed receipts are saved by the app server. No audio is stored.</p></div><button className="text-button" onClick={onRefresh}>Refresh history</button></div>{error && <div className="alert alert-error">{error}</div>}{loading ? <div className="history-empty"><span className="loader"/>Loading saved orders…</div> : orders.length ? <div className="history-list">{orders.map((order) => <button className="history-row" key={order.id} onClick={() => onSelect(order)}><span className="history-receipt-icon"><Icon name="receipt" size={20}/></span><span className="history-main"><strong>{order.receiptNumber}</strong><small>{describeDate(order.createdAt)} <span>·</span> {order.items.length} {order.items.length === 1 ? 'item' : 'items'} <span>·</span> {order.customer}</small></span><strong className="history-total">{formatMoney(order.totalPaise)}</strong><span className="history-arrow"><Icon name="arrow" size={17}/></span></button>)}</div> : <div className="history-empty"><span className="empty-receipt"><Icon name="receipt" size={25}/></span><strong>No confirmed orders yet</strong><span>Once an order is read back and confirmed, its receipt will show here.</span><button className="primary-button" onClick={onNew}>Take your first order <Icon name="arrow" size={16}/></button></div>}</section>;
+  return <section className="card history-card"><div className="card-topline"><div><p className="eyebrow">ORDER HISTORY</p><h2>Recent orders</h2><p className="muted">Confirmed receipts stay in your order history. No audio is saved.</p></div><button className="text-button" onClick={onRefresh}>Refresh history</button></div>{error && <div className="alert alert-error">{error}</div>}{loading ? <div className="history-empty"><span className="loader"/>Loading saved orders…</div> : orders.length ? <div className="history-list">{orders.map((order) => <button className="history-row" key={order.id} onClick={() => onSelect(order)}><span className="history-receipt-icon"><Icon name="receipt" size={20}/></span><span className="history-main"><strong>{order.receiptNumber}</strong><small>{describeDate(order.createdAt)} <span>·</span> {order.items.length} {order.items.length === 1 ? 'item' : 'items'} <span>·</span> {order.customer}</small></span><strong className="history-total">{formatMoney(order.totalPaise)}</strong><span className="history-arrow"><Icon name="arrow" size={17}/></span></button>)}</div> : <div className="history-empty"><span className="empty-receipt"><Icon name="receipt" size={25}/></span><strong>No confirmed orders yet</strong><span>Once an order is read back and confirmed, its receipt will show here.</span><button className="primary-button" onClick={onNew}>Take your first order <Icon name="arrow" size={16}/></button></div>}</section>;
 }
 
 function ReceiptView({ receipt, onNew, onHistory, isHistory = false }) {
